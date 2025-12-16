@@ -13,12 +13,10 @@ contract BasefeeSurgeTrap is ITrap {
     function shouldRespond(
         bytes[] calldata data
     ) external pure override returns (bool, bytes memory) {
-        if (data.length == 0 || data[0].length == 0) return (false, bytes(""));
-
-        if (data.length < 2 || data[1].length == 0) return (false, bytes(""));
-
-        if (data[0].length < 64 || data[1].length < 64)
+        if (data.length < 2) return (false, bytes(""));
+        if (data[0].length < 64 || data[1].length < 64) {
             return (false, bytes(""));
+        }
 
         (uint256 basefeeNew, uint256 blockNew) = abi.decode(
             data[0],
@@ -30,19 +28,11 @@ contract BasefeeSurgeTrap is ITrap {
         );
 
         if (basefeePrev == 0) return (false, bytes(""));
+        if (blockNew <= blockPrev) return (false, bytes(""));
 
-        bool trigger = (basefeeNew >= basefeePrev * SURGE_MULTIPLIER);
-
+        bool trigger = (basefeeNew / SURGE_MULTIPLIER) >= basefeePrev;
         if (!trigger) return (false, bytes(""));
 
-        bytes memory payload = abi.encode(
-            address(0),
-            basefeeNew,
-            basefeePrev,
-            blockNew,
-            string("Basefee surge detected")
-        );
-
-        return (true, payload);
+        return (true, abi.encode(basefeeNew, basefeePrev, blockNew));
     }
 }

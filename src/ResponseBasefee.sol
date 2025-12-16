@@ -11,18 +11,16 @@ contract ResponseBasefee {
     );
 
     function respondWithBasefeeSpike(
-        address reporter,
         uint256 currentBasefee,
         uint256 previousBasefee,
-        uint256 blockNumber,
-        string calldata reason
+        uint256 blockNumber
     ) external {
         emit BasefeeSpikeReported(
-            reporter,
+            msg.sender,
             currentBasefee,
             previousBasefee,
             blockNumber,
-            reason
+            "Basefee surge detected"
         );
     }
 }
