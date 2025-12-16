@@ -1,225 +1,205 @@
+# Basefee Surge Trap (Drosera Proof-of-Concept)
 
-# **Basefee Surge Trap (Drosera Proof-of-Concept)**
+This repository contains a fully implemented, Drosera-compatible Proof of Concept trap designed to monitor **EIP-1559 basefee dynamics** on the Hoodi Testnet and emit a deterministic response when sudden basefee surges occur.
 
-This repository contains a fully-implemented, Drosera-compatible Proof of Concept trap designed to monitor **EIP-1559 basefee behavior** on the Hoodi Testnet and produce a deterministic response when sudden spikes occur. The trap follows Drosera’s strict interface requirements, maintains planner safety, operates in a stateless manner, and is compatible with multi-operator validation under the Drosera relay network.
-
-The purpose of this PoC is to demonstrate clear understanding of the Drosera architecture, clean separation between the trap and its responder, and safe use of the ITrap interface while handling block state data across consecutive block samples.
-
----
-
-## **Overview**
-
-EIP-1559 introduced a dynamical mechanism in which the basefee adjusts per block based on network congestion. This trap focuses on detecting *sharp upward shifts* in the basefee between consecutive samples collected by the Drosera relay. These types of sudden basefee spikes often correlate with:
-
-* short-duration congestion waves
-* bursty transaction load
-* potential MEV-driven manipulation
-* abnormally high priority fee competition
-
-The trap analyzes a pair of sequential observations, comparing the previous and current basefee, and triggers a response only when the increase surpasses a defined threshold. The responder then emits structured logs that make it easy to track network behavior or build analytics around basefee volatility.
+The project demonstrates a clear understanding of the Drosera trap lifecycle, strict adherence to the `ITrap` interface, safe payload construction, and clean separation between detection logic (trap) and execution logic (responder).
 
 ---
 
-## **Design Goals**
+## Overview
 
-This PoC was built around Drosera’s core principles:
+Under EIP-1559, Ethereum’s basefee adjusts dynamically based on block-level demand. While normally gradual, basefee can spike sharply during sudden congestion events such as:
 
-### **1. Statelessness**
+- short-lived demand bursts
+- MEV-driven transaction competition
+- coordinated block stuffing
+- priority fee bidding wars
 
-The trap stores *no state* and infers everything purely from sequential `collect()` samples.
-This ensures:
+This trap focuses on **detecting abrupt basefee surges** between consecutive block samples collected by the Drosera relay. When the current basefee exceeds a defined multiple of the previous sample, the trap triggers a responder that emits structured event data for monitoring or downstream automation.
 
-* deterministic operation across multiple operators
-* zero storage writes
-* replay safety
-* planner-safe evaluation
+---
 
-### **2. Relay-First Architecture**
+## Design Principles
 
-The trap assumes the Drosera relay is responsible for:
+This PoC is built around Drosera’s core architectural principles.
 
-* scheduling execution
-* feeding the ordered samples
-* determining sampling intervals
-* enforcing cooldown periods
+### 1. Stateless Execution
 
-The trap itself only supplies logic for *when* a response should occur.
+The trap maintains **no on-chain storage**.  
+All decisions are derived exclusively from ordered samples supplied by the Drosera relay.
 
-### **3. Clean, Minimal, Predictable Logic**
+This guarantees:
+- deterministic evaluation across operators
+- replay safety
+- zero storage writes
+- planner-safe execution
 
-The threshold comparison is intentionally simple:
+---
+
+### 2. Relay-Driven Sampling
+
+The trap delegates all scheduling concerns to the Drosera relay, including:
+- sample cadence
+- block ordering
+- cooldown enforcement
+- operator coordination
+
+The contract itself only answers one question:
+**“Given these samples, should a response occur?”**
+
+---
+
+### 3. Predictable Threshold Logic
+
+The surge condition is intentionally simple and transparent.
+
+The trap triggers when:
 
 ```
-if (currentBasefee > previousBasefee + THRESHOLD) => respond
+
+currentBasefee >= previousBasefee * SURGE_MULTIPLIER
+
 ```
 
-This design avoids ambiguous heuristics and ensures transparent behavior.
-
-### **4. Fully Planner-Safe**
-
-The contract avoids unsafe assumptions by systematically checking:
-
-* `data.length >= 2`
-* `data[0].length > 0`, `data[1].length > 0`
-* proper decoding boundaries
-
-This is required for safe multi-operator deployment.
+This avoids probabilistic heuristics and makes behavior easy to reason about, audit, and reproduce.
 
 ---
 
-## **How the Trap Works**
+### 4. Planner-Safe Defensive Checks
 
-### **1. Data Collection Stage**
+The implementation includes explicit safety checks to prevent malformed inputs:
 
-`collect()` is called by the Drosera relay every block (or according to the configured sample rate).
-It returns:
+- verifies sufficient sample count
+- validates byte length before decoding
+- guards against zero basefee edge cases
 
-* the current basefee
-* the current block number
+These checks are critical for safe multi-operator evaluation.
+
+---
+
+## How the Trap Works
+
+### 1. Data Collection
+
+The `collect()` function is invoked by the Drosera relay and returns:
+
+- the current block basefee
+- the current block number
 
 Encoded as:
 
 ```
-abi.encode(basefee, block.number)
-```
 
-This becomes the next sample in the Drosera sample ring.
-
----
-
-### **2. Evaluation Stage**
-
-`shouldRespond(bytes[] calldata data)` receives the last two samples:
-
-* `data[0]` → newest block
-* `data[1]` → previous block
-
-The trap performs:
-
-1. Safety checks
-2. Decoding of both samples
-3. Threshold comparison
-
-If conditions match, the trap returns:
+abi.encode(block.basefee, block.number)
 
 ```
-(true, data[0])
+
+Each call produces one immutable sample for later evaluation.
+
+---
+
+### 2. Evaluation Phase
+
+`shouldRespond(bytes[] calldata data)` receives the two most recent samples:
+
+- `data[0]` → newest sample
+- `data[1]` → previous sample
+
+The trap:
+1. Validates input integrity
+2. Decodes both samples
+3. Compares basefees using a fixed multiplier
+
+If the surge condition is met, the trap returns:
+
 ```
 
-The payload `data[0]` becomes the input to the response contract.
+(true, abi.encode(
+address(0),
+currentBasefee,
+previousBasefee,
+currentBlock,
+"Basefee surge detected"
+))
+
+````
+
+This encoded payload is forwarded directly to the responder.
 
 ---
 
-### **3. Response Execution Stage**
+### 3. Response Execution
 
-The responder contract (`ResponseBasefee.sol`) receives the payload and decodes:
+The responder contract (`ResponseBasefee.sol`) receives the payload and emits a structured event containing:
 
-* previous basefee
-* previous block
-* current basefee
-* current block
+- reporter address (currently zeroed)
+- current basefee
+- previous basefee
+- block number
+- human-readable reason string
 
-It then emits an event summarizing the spike, enabling off-chain indexing tools or researchers to track localized surges in basefee.
-
-No state is stored, and no additional logic is executed to maintain predictable behavior.
-
----
-
-## **Use Case**
-
-A trap like this is useful for:
-
-* monitoring congestion
-* triggering automated alerts
-* examining abnormal basefee behavior
-* detecting MEV-induced demand spikes
-* reacting programmatically to fee pressure
-
-This PoC serves as a foundation that can expand into more advanced fee-response strategies like:
-
-* statistical anomaly detection
-* rolling-window basefee volatility analysis
-* threshold adaptation
+No state is mutated, and no external calls are performed, preserving deterministic behavior.
 
 ---
 
-## **Deployment Summary**
+## Use Cases
 
-Your contracts have been successfully deployed on the Hoodi Testnet.
+This trap can be used for:
 
-### **Contract Addresses**
+- real-time congestion monitoring
+- fee volatility analysis
+- alerting systems
+- MEV research
+- automated responses to fee pressure
+
+It also serves as a clean foundation for future extensions such as:
+- adaptive thresholds
+- rolling-window analysis
+- statistical anomaly detection
+
+---
+
+## Deployment Summary
+
+The contracts are deployed on the Hoodi Testnet.
 
 | Contract             | Address                                      |
-| -------------------- | -------------------------------------------- |
-| **ResponseBasefee**  | `0x7eDBCA1450f90F1927cb5721302a209D1e109fc9` |
-| **BasefeeSurgeTrap** | `0xe5443D5CD2AeBB6930FaC46aA440D847d92A7584` |
+|----------------------|----------------------------------------------|
+| ResponseBasefee      | 0x7eDBCA1450f90F1927cb5721302a209D1e109fc9 |
+| BasefeeSurgeTrap     | 0xe5443D5CD2AeBB6930FaC46aA440D847d92A7584 |
 
 ---
 
-## **Network Configuration**
+## Network Configuration
 
-**Chain:** Hoodi Testnet
-**Chain ID:** `560048`
-**Ethereum RPC:** `https://ethereum-hoodi-rpc.publicnode.com`
-**Drosera Relay:** `https://relay.hoodi.drosera.io`
-
----
-
-## **drosera.toml (Ready for Operator Use)**
-
-```toml
-ethereum_rpc   = "https://ethereum-hoodi-rpc.publicnode.com"
-drosera_rpc    = "https://relay.hoodi.drosera.io"
-eth_chain_id   = 560048
-drosera_address = "0x91cB447BaFc6e0EA0F4Fe056F5a9b1F14bb06e5D"
-
-[traps]
-
-[traps.basefee_surge]
-path = "out/BasefeeSurgeTrap.sol/BasefeeSurgeTrap.json"
-response_contract = "0x7eDBCA1450f90F1927cb5721302a209D1e109fc9"
-response_function = "respondToBasefee(uint256,uint256)"
-block_sample_size = 2
-cooldown_period_blocks = 20
-private_trap = true
-whitelist = ["0x8b75540D19629C135D2822EEfb124838AC0b0f68"]
-```
-
-This configuration adheres exactly to the formatting and structure expected by Drosera moderators.
+- Chain: Hoodi Testnet  
+- Chain ID: 560048  
+- Ethereum RPC: https://ethereum-hoodi-rpc.publicnode.com  
+- Drosera Relay: https://relay.hoodi.drosera.io  
 
 ---
 
-## **Running the Trap**
+## Operator Configuration
 
-### **1. Start the Drosera node**
+The provided `drosera.toml` is fully aligned with the deployed contracts and payload structure.
+
+Operators can run the trap using:
 
 ```bash
 drosera node
-```
-
-### **2. Run the operator for this trap**
-
-```bash
 drosera operator --trap basefee_surge
-```
-
-The relay will now:
-
-* collect new basefee samples
-* pass them into your trap
-* evaluate the threshold logic
-* automatically call your responder when triggered
+````
 
 ---
 
-## **Repository Structure**
+## Repository Structure
 
 ```
 src/
  ├─ BasefeeSurgeTrap.sol
  ├─ ResponseBasefee.sol
  └─ interfaces/
-      └─ ITrap.sol
+     └─ ITrap.sol
 
 lib/
 out/
@@ -228,28 +208,27 @@ drosera.toml
 README.md
 ```
 
-Each file has a clear responsibility and maintains separation of concerns.
+Each component has a single responsibility and follows Drosera best practices.
 
 ---
 
-## **Safety & Reliability Notes**
+## Safety Notes
 
-This trap follows Drosera best practices:
+This trap adheres strictly to Drosera safety expectations:
 
-* **no storage writes**
-* **no dynamic state mutation**
-* **no unsafe external calls**
-* **predictable, fully deterministic behavior**
-* **planner-safe array and payload checks**
-* **relay-friendly logic flow**
-* **compatible with private trap whitelisting**
-
-These properties make it suitable for evaluation for higher Drosera roles (Sergeant, Captain, Janissary Hero, etc).
+* no storage writes
+* no dynamic state
+* no external calls
+* deterministic execution
+* planner-safe decoding
+* relay-compatible payloads
+* private trap whitelisting support
 
 ---
 
-## **Acknowledgements**
+## Acknowledgements
 
-Special thanks to the Drosera review team for building a clear ecosystem around modular trap development. This PoC follows patterns gathered from the official examples, Janissary traps, and feedback shared within the Trappers’ Path.
+Thanks to the Drosera maintainers and reviewers for providing clear standards and constructive feedback.
+This PoC incorporates lessons from official examples and community guidance across the Trappers’ Path.
 
----
+```
