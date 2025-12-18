@@ -8,7 +8,7 @@ drosera_address = "0x91cB447BaFc6e0EA0F4Fe056F5a9b1F14bb06e5D"
 [traps.basefee_surge]
 path = "out/BasefeeSurgeTrap.sol/BasefeeSurgeTrap.json"
 response_contract = "0x31942507168F757e62d3503F198F8F8d1b3583c5"
-response_function = "respondWithBasefeeSpike(address,uint256,uint256,uint256,string)"
+response_function = "respondWithBasefeeSpike(uint256,uint256,uint256)"
 block_sample_size = 2
 cooldown_period_blocks = 20
 private_trap = true
